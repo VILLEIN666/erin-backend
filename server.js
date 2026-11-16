@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 const DB_FILE = path.join(__dirname, 'database.json');
 
 app.use(cors());
@@ -18,13 +18,13 @@ if (!fs.existsSync(DB_FILE)) {
 function readDB() { return JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); }
 function writeDB(data) { fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2)); }
 
-// ============ API ============
+// ============ USER API ============
 
 app.post('/api/register', (req, res) => {
     const { name, phone, password } = req.body;
     const db = readDB();
     if (db.users.find(u => u.phone === phone)) return res.status(400).json({ error: 'এই নাম্বার দিয়ে অ্যাকাউন্ট আছে!' });
-    const newUser = { id: Date.now(), name, phone, password, kycDone: false, walletBalance: 0, profilePic: null, kycData: null };
+    const newUser = { id: Date.now(), name, phone, password, kycDone: false, walletBalance: 0, profilePic: null, kycData: null, createdAt: new Date().toISOString() };
     db.users.push(newUser);
     writeDB(db);
     res.json({ success: true, user: newUser });
@@ -57,22 +57,48 @@ app.post('/api/loan-request', (req, res) => {
     if (!user) return res.status(404).json({ error: 'ইউজার নেই!' });
 
     const request = {
-        id: Date.now(),
-        userId: user.id,
-        userName: user.name,
-        userPhone: user.phone,
-        kycNid: user.kycData?.nidNumber || 'N/A',
-        kycAddress: user.kycData?.address || 'N/A',
-        kycFather: user.kycData?.fatherName || 'N/A',
-        faceImg: user.profilePic,
-        amount, trxId, depositAmount,
-        status: 'pending',
-        date: new Date().toISOString()
+        id: Date.now(), userId: user.id, userName: user.name, userPhone: user.phone,
+        kycNid: user.kycData?.nidNumber || 'N/A', kycAddress: user.kycData?.address || 'N/A',
+        kycFather: user.kycData?.fatherName || 'N/A', faceImg: user.profilePic,
+        amount, trxId, depositAmount, status: 'pending', date: new Date().toISOString()
     };
     db.requests.push(request);
     writeDB(db);
     res.json({ success: true, request });
 });
+
+app.get('/api/user/requests/:userId', (req, res) => {
+    const db = readDB();
+    res.json(db.requests.filter(r => r.userId === parseInt(req.params.userId)));
+});
+
+app.post('/api/cashout', (req, res) => {
+    const { userId, amount, number } = req.body;
+    const db = readDB();
+    const idx = db.users.findIndex(u => u.id === userId);
+    if (idx === -1) return res.status(404).json({ error: 'ইউজার নেই!' });
+    if (db.users[idx].walletBalance < amount) return res.status(400).json({ error: 'ব্যালেন্স নেই!' });
+    
+    db.users[idx].walletBalance -= amount;
+    db.cashouts.push({ id: Date.now(), userId, userName: db.users[idx].name, number, amount, status: 'pending', date: new Date().toISOString() });
+    writeDB(db);
+    res.json({ success: true });
+});
+
+app.post('/api/chat/send', (req, res) => {
+    const { userId, userName, text, sender } = req.body;
+    const db = readDB();
+    db.chats.push({ id: Date.now(), userId, userName, text, sender, date: new Date().toISOString() });
+    writeDB(db);
+    res.json({ success: true });
+});
+
+app.get('/api/chat/user/:userId', (req, res) => {
+    const db = readDB();
+    res.json(db.chats.filter(c => c.userId === parseInt(req.params.userId)));
+});
+
+// ============ AGENT API ============
 
 app.get('/api/agent/requests', (req, res) => {
     const db = readDB();
@@ -98,32 +124,26 @@ app.post('/api/agent/action', (req, res) => {
     res.json({ success: true });
 });
 
-app.get('/api/user/requests/:userId', (req, res) => {
+app.get('/api/agent/users', (req, res) => {
     const db = readDB();
-    res.json(db.requests.filter(r => r.userId === parseInt(req.params.userId)));
+    res.json(db.users);
 });
 
-// ক্যাশ আউট
-app.post('/api/cashout', (req, res) => {
-    const { userId, amount, number } = req.body;
+app.post('/api/agent/reset-password', (req, res) => {
+    const { userId, newPassword } = req.body;
     const db = readDB();
     const idx = db.users.findIndex(u => u.id === userId);
     if (idx === -1) return res.status(404).json({ error: 'ইউজার নেই!' });
-    if (db.users[idx].walletBalance < amount) return res.status(400).json({ error: 'ব্যালেন্স নেই!' });
-    
-    db.users[idx].walletBalance -= amount;
-    db.cashouts.push({ id: Date.now(), userId, userName: db.users[idx].name, number, amount, status: 'pending', date: new Date().toISOString() });
+    db.users[idx].password = newPassword;
     writeDB(db);
     res.json({ success: true });
 });
 
-// এজেন্টের জন্য পেন্ডিং ক্যাশ আউট
 app.get('/api/agent/cashouts', (req, res) => {
     const db = readDB();
     res.json(db.cashouts.filter(c => c.status === 'pending'));
 });
 
-// এজেন্ট কর্তৃক ক্যাশ আউট অ্যাপ্রুভ/রিজেক্ট
 app.post('/api/agent/cashout-action', (req, res) => {
     const { cashoutId, action } = req.body;
     const db = readDB();
@@ -135,17 +155,8 @@ app.post('/api/agent/cashout-action', (req, res) => {
     } else {
         db.cashouts[idx].status = 'rejected';
         const userIdx = db.users.findIndex(u => u.id === db.cashouts[idx].userId);
-        if(userIdx !== -1) db.users[userIdx].walletBalance += db.cashouts[idx].amount; // রিফান্ড
+        if(userIdx !== -1) db.users[userIdx].walletBalance += db.cashouts[idx].amount;
     }
-    writeDB(db);
-    res.json({ success: true });
-});
-
-// চ্যাট
-app.post('/api/chat/send', (req, res) => {
-    const { userId, userName, text, sender } = req.body;
-    const db = readDB();
-    db.chats.push({ id: Date.now(), userId, userName, text, sender, date: new Date().toISOString() });
     writeDB(db);
     res.json({ success: true });
 });
@@ -155,9 +166,14 @@ app.get('/api/chat/agent', (req, res) => {
     res.json(db.chats);
 });
 
-app.get('/api/chat/user/:userId', (req, res) => {
+app.get('/api/agent/stats', (req, res) => {
     const db = readDB();
-    res.json(db.chats.filter(c => c.userId === parseInt(req.params.userId)));
+    res.json({
+        totalUsers: db.users.length,
+        totalLoans: db.requests.length,
+        totalPendingLoans: db.requests.filter(r => r.status === 'pending').length,
+        totalCashouts: db.cashouts.filter(c => c.status === 'pending').length
+    });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
