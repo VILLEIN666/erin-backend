@@ -179,3 +179,37 @@ app.get('/api/agent/stats', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ e-Rin API running on http://0.0.0.0:${PORT}`);
 });
+
+// ============ AGENT PROFILE API ============
+app.post('/api/agent/update-profile', (req, res) => {
+    const { name, phone, password, profilePic } = req.body;
+    const db = readDB();
+    // Since there's only one agent, we'll use a special agent object in DB
+    if (!db.agent) db.agent = { name: 'Admin Panel', phone: '01700000000', password: 'admin123', profilePic: null };
+    
+    if (name) db.agent.name = name;
+    if (phone) db.agent.phone = phone;
+    if (password) db.agent.password = password;
+    if (profilePic) db.agent.profilePic = profilePic;
+    
+    writeDB(db);
+    res.json({ success: true, agent: db.agent });
+});
+
+app.post('/api/agent/login', (req, res) => {
+    const { phone, password } = req.body;
+    const db = readDB();
+    if (!db.agent) db.agent = { name: 'Admin Panel', phone: '01700000000', password: 'admin123', profilePic: null };
+    
+    if (db.agent.phone === phone && db.agent.password === password) {
+        res.json({ success: true, agent: db.agent });
+    } else {
+        res.status(401).json({ error: 'ভুল তথ্য!' });
+    }
+});
+
+app.get('/api/agent/profile', (req, res) => {
+    const db = readDB();
+    if (!db.agent) db.agent = { name: 'Admin Panel', phone: '01700000000', password: 'admin123', profilePic: null };
+    res.json(db.agent);
+});
